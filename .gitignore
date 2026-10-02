@@ -17,3 +17,4 @@ Thumbs.db
 # IDE
 .vscode/
 AZURE components.txt
+backend/app/tasks_data.json
