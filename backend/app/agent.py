@@ -1,4 +1,5 @@
 import os, json, re
+from datetime import date, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -22,13 +23,30 @@ ALL_TOOLS = TASKS_MANIFEST  # + SCHEDULE_MANIFEST + REMINDERS_MANIFEST ... later
 AVAILABLE_FUNCTIONS = {tool["name"]: tool["function"] for tool in ALL_TOOLS}
 
 
+def _date_context():
+    """Today's date plus the next 8 days, so the model can convert
+    words like 'tomorrow' or 'this Friday' into real dates."""
+    today = date.today()
+    upcoming = "\n".join(
+        f"- {(today + timedelta(days=i)).strftime('%A %Y-%m-%d')}"
+        for i in range(0, 9)
+    )
+    return today.strftime("%A, %Y-%m-%d"), upcoming
+
+
 def _build_system_prompt():
     tool_descriptions = ""
     for tool in ALL_TOOLS:
         args_desc = ", ".join(f"{k}: {v}" for k, v in tool["args"].items()) or "no arguments"
         tool_descriptions += f"- {tool['name']}({args_desc}): {tool['description']}\n"
 
+    today_text, upcoming_text = _date_context()
+
     return f"""You are Agent Bujji, a personal AI assistant with access to real tools. You do NOT pretend to use tools - you MUST actually call them.
+
+Today is {today_text}.
+Calendar for the next days:
+{upcoming_text}
 
 Available tools:
 {tool_descriptions}
@@ -40,6 +58,7 @@ RULES:
 4. If the user asks for something that NO tool above can do (for example sending an email, setting a reminder, or checking the weather), reply in plain text: say clearly that you cannot do that yet, and mention what you CAN do with your tools.
 5. NEVER claim you did something unless a tool actually ran and confirmed it.
 6. Plain text is also fine for normal conversation and greetings.
+7. DATES: when a tool needs a due date, convert the user's words (tomorrow, Friday, next Monday, in 3 days) into YYYY-MM-DD using the calendar above. Always pass the date as YYYY-MM-DD, never as words. If the user gives no date, leave due_date out.
 """
 
 
