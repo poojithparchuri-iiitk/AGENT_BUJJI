@@ -10,11 +10,14 @@ frontend/dist/
 # Environment variables
 .env
 
+# Personal data
+AZURE components.txt
+backend/app/tasks_data.json
+backend/app/bujji.db
+
 # OS files
 .DS_Store
 Thumbs.db
 
 # IDE
 .vscode/
-AZURE components.txt
-backend/app/tasks_data.json

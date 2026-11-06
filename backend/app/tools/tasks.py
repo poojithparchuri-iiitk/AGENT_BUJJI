@@ -1,51 +1,57 @@
-import json
-import os
+from database import get_connection, init_db
 
-TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "tasks_data.json")
+# Make sure the tasks table exists
+init_db()
 
-def _load_tasks():
-    if not os.path.exists(TASKS_FILE):
-        return []
-    with open(TASKS_FILE, "r") as f:
-        return json.load(f)
 
-def _save_tasks(tasks):
-    with open(TASKS_FILE, "w") as f:
-        json.dump(tasks, f, indent=2)
+def _row_to_dict(row):
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "due_date": row["due_date"],
+        "completed": bool(row["completed"]),
+    }
+
 
 def add_task(title: str, due_date: str = None):
-    tasks = _load_tasks()
-    new_task = {
-        "id": len(tasks) + 1,
-        "title": title,
-        "due_date": due_date,
-        "completed": False
-    }
-    tasks.append(new_task)
-    _save_tasks(tasks)
-    return new_task
+    conn = get_connection()
+    cursor = conn.execute(
+        "INSERT INTO tasks (title, due_date) VALUES (?, ?)",
+        (title, due_date),
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (new_id,)).fetchone()
+    conn.close()
+    return _row_to_dict(row)
+
 
 def list_tasks():
-    return _load_tasks()
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM tasks ORDER BY id").fetchall()
+    conn.close()
+    return [_row_to_dict(r) for r in rows]
+
 
 def complete_task(task_id: int):
-    tasks = _load_tasks()
-    for task in tasks:
-        if task["id"] == task_id:
-            task["completed"] = True
-            _save_tasks(tasks)
-            return task
-    return None
+    conn = get_connection()
+    conn.execute("UPDATE tasks SET completed = 1 WHERE id = ?", (task_id,))
+    conn.commit()
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    conn.close()
+    return _row_to_dict(row) if row else None
+
 
 def delete_task(task_id: int):
-    tasks = _load_tasks()
-    tasks = [t for t in tasks if t["id"] != task_id]
-    _save_tasks(tasks)
-    return True
+    conn = get_connection()
+    cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
 
 # --- Tool Manifest ---
-# This is what gets read by the agent to build its prompt and function map.
-# Every future tool file (schedule.py, reminders.py, etc.) will have one of these.
+# Read by agent.py to build the prompt and the function map.
 
 TOOL_MANIFEST = [
     {
