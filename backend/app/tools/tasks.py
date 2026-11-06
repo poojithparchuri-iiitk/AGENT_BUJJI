@@ -50,6 +50,14 @@ def delete_task(task_id: int):
     return cursor.rowcount > 0
 
 
+def clear_completed_tasks():
+    conn = get_connection()
+    cursor = conn.execute("DELETE FROM tasks WHERE completed = 1")
+    conn.commit()
+    conn.close()
+    return {"deleted_count": cursor.rowcount}
+
+
 # --- Tool Manifest ---
 # Read by agent.py to build the prompt and the function map.
 
@@ -74,8 +82,14 @@ TOOL_MANIFEST = [
     },
     {
         "name": "delete_task",
-        "description": "Delete a task by its ID",
+        "description": "Delete one task by its ID",
         "args": {"task_id": "integer"},
         "function": delete_task,
+    },
+    {
+        "name": "clear_completed_tasks",
+        "description": "Delete ALL tasks that are already completed",
+        "args": {},
+        "function": clear_completed_tasks,
     },
 ]
