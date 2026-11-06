@@ -1,7 +1,11 @@
+import re
 from database import get_connection, init_db
 
 # Make sure the tasks table exists
 init_db()
+
+# Words ignored when matching a task by its title
+STOP_WORDS = {"the", "a", "an", "my", "one", "task", "tasks", "it", "that", "this", "to", "of"}
 
 
 def _row_to_dict(row):
@@ -10,6 +14,31 @@ def _row_to_dict(row):
         "title": row["title"],
         "due_date": row["due_date"],
         "completed": bool(row["completed"]),
+    }
+
+
+def _find_tasks(task_id=None, title=None):
+    """Find tasks by ID, or by words from the title. Returns a list of rows."""
+    ref = task_id if task_id is not None else title
+    if ref is None:
+        return []
+    text = str(ref).strip()
+
+    conn = get_connection()
+    if text.isdigit():
+        rows = conn.execute("SELECT * FROM tasks WHERE id = ?", (int(text),)).fetchall()
+    else:
+        words = [w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in STOP_WORDS]
+        all_rows = conn.execute("SELECT * FROM tasks ORDER BY id").fetchall()
+        rows = [r for r in all_rows if words and all(w in r["title"].lower() for w in words)]
+    conn.close()
+    return rows
+
+
+def _ambiguous(rows):
+    return {
+        "error": "More than one task matches. Ask the user which one they mean.",
+        "matches": [_row_to_dict(r) for r in rows],
     }
 
 
@@ -33,21 +62,33 @@ def list_tasks():
     return [_row_to_dict(r) for r in rows]
 
 
-def complete_task(task_id: int):
+def complete_task(task_id=None, title=None):
+    rows = _find_tasks(task_id, title)
+    if not rows:
+        return None
+    if len(rows) > 1:
+        return _ambiguous(rows)
+
     conn = get_connection()
-    conn.execute("UPDATE tasks SET completed = 1 WHERE id = ?", (task_id,))
+    conn.execute("UPDATE tasks SET completed = 1 WHERE id = ?", (rows[0]["id"],))
     conn.commit()
-    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (rows[0]["id"],)).fetchone()
     conn.close()
-    return _row_to_dict(row) if row else None
+    return _row_to_dict(row)
 
 
-def delete_task(task_id: int):
+def delete_task(task_id=None, title=None):
+    rows = _find_tasks(task_id, title)
+    if not rows:
+        return False
+    if len(rows) > 1:
+        return _ambiguous(rows)
+
     conn = get_connection()
-    cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.execute("DELETE FROM tasks WHERE id = ?", (rows[0]["id"],))
     conn.commit()
     conn.close()
-    return cursor.rowcount > 0
+    return True
 
 
 def clear_completed_tasks():
@@ -65,7 +106,7 @@ TOOL_MANIFEST = [
     {
         "name": "add_task",
         "description": "Add a new task",
-        "args": {"title": "string", "due_date": "string (optional)"},
+        "args": {"title": "string", "due_date": "string YYYY-MM-DD (optional)"},
         "function": add_task,
     },
     {
@@ -76,14 +117,20 @@ TOOL_MANIFEST = [
     },
     {
         "name": "complete_task",
-        "description": "Mark a task as completed by its ID",
-        "args": {"task_id": "integer"},
+        "description": "Mark one task as completed",
+        "args": {
+            "task_id": "integer, only if the ID is known",
+            "title": "string, words from the task title (use when the ID is not known)",
+        },
         "function": complete_task,
     },
     {
         "name": "delete_task",
-        "description": "Delete one task by its ID",
-        "args": {"task_id": "integer"},
+        "description": "Delete one task",
+        "args": {
+            "task_id": "integer, only if the ID is known",
+            "title": "string, words from the task title (use when the ID is not known)",
+        },
         "function": delete_task,
     },
     {

@@ -7,10 +7,13 @@ function App() {
   const [loading, setLoading] = useState(false)
 
   const sendMessage = async () => {
-    if (!input.trim()) return
+    const text = input.trim()
+    if (!text) return
 
-    const userMessage = { role: 'user', content: input }
-    setMessages((prev) => [...prev, userMessage])
+    // The last 6 earlier messages become Bujji's short-term memory
+    const history = messages.slice(-6)
+
+    setMessages((prev) => [...prev, { role: 'user', content: text }])
     setInput('')
     setLoading(true)
 
@@ -18,7 +21,7 @@ function App() {
       const res = await fetch('http://127.0.0.1:8000/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input }),
+        body: JSON.stringify({ message: text, history: history }),
       })
       const data = await res.json()
       setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }])

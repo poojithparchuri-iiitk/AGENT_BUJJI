@@ -22,6 +22,9 @@ ALL_TOOLS = TASKS_MANIFEST  # + SCHEDULE_MANIFEST + REMINDERS_MANIFEST ... later
 # Lookup: tool name -> actual Python function
 AVAILABLE_FUNCTIONS = {tool["name"]: tool["function"] for tool in ALL_TOOLS}
 
+# How many previous messages Bujji can "remember" in one chat
+MAX_HISTORY = 6
+
 
 def _date_context():
     """Today's date plus the next 8 days, so the model can convert
@@ -59,6 +62,8 @@ RULES:
 5. NEVER claim you did something unless a tool actually ran and confirmed it.
 6. Plain text is also fine for normal conversation and greetings.
 7. DATES: when a tool needs a due date, convert the user's words (tomorrow, Friday, next Monday, in 3 days) into YYYY-MM-DD using the calendar above. Always pass the date as YYYY-MM-DD, never as words. If the user gives no date, leave due_date out.
+8. You can see the recent conversation. Use it to understand words like "it" or "that task". Even when the earlier replies were plain text, a request that needs a tool must still be answered with ONLY the JSON object.
+9. Do NOT ask the user for confirmation before doing something they clearly asked for, such as marking a task done. Call the tool right away. Only ask a question if a tool result says more than one task matches.
 """
 
 
@@ -75,11 +80,25 @@ def _try_parse_tool_call(reply: str):
     return None
 
 
-def run_agent(user_message: str) -> str:
-    messages = [
-        {"role": "system", "content": _build_system_prompt()},
-        {"role": "user", "content": user_message}
-    ]
+def _clean_history(history):
+    """Keep only the last few valid user/assistant messages."""
+    if not history:
+        return []
+    cleaned = []
+    for item in history:
+        role = item.get("role")
+        content = item.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            cleaned.append({"role": role, "content": content})
+    return cleaned[-MAX_HISTORY:]
+
+
+def run_agent(user_message: str, history=None) -> str:
+    messages = (
+        [{"role": "system", "content": _build_system_prompt()}]
+        + _clean_history(history)
+        + [{"role": "user", "content": user_message}]
+    )
 
     response = client.chat.completions.create(
         model="Phi-4",
@@ -115,6 +134,8 @@ def run_agent(user_message: str) -> str:
             "Reply to the user naturally, using ONLY this result. "
             "If the result is null, false, or empty because nothing was found or changed, "
             "say clearly that it did not work or nothing matched. "
+            "When listing tasks, show each task's real id number exactly as it appears "
+            "in the result; never renumber them. "
             "Do not claim anything the result does not show."
         )}
     ]

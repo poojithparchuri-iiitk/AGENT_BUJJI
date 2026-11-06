@@ -14,14 +14,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class ChatRequest(BaseModel):
     message: str
+    history: list[dict] = []
+
 
 @app.get("/")
 def read_root():
     return {"message": "Agent Bujji backend is running"}
 
+
 @app.post("/chat")
 def chat(request: ChatRequest):
-    reply = run_agent(request.message)
+    reply = run_agent(request.message, request.history)
     return {"reply": reply}
