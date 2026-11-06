@@ -16,6 +16,9 @@ client = OpenAI(
     api_key=api_key,
 )
 
+# Set to False to silence the [DEBUG] lines in the backend terminal
+DEBUG = True
+
 # Combine manifests from all tool files here.
 # When you add a new tool file later, import its manifest and add it to this list.
 ALL_TOOLS = TASKS_MANIFEST + SCHEDULE_MANIFEST  # + REMINDERS_MANIFEST ... later
@@ -27,6 +30,8 @@ AVAILABLE_FUNCTIONS = {tool["name"]: tool["function"] for tool in ALL_TOOLS}
 MAX_HISTORY = 6
 # Long earlier replies are cut to this many characters
 MAX_HISTORY_CHARS = 400
+# Most tool calls Bujji may run for a single user message
+MAX_TOOL_CALLS = 5
 
 # Phrases that claim an action was done. If the model writes one of these in a
 # plain-text reply WITHOUT having run a tool, the claim is fake.
@@ -36,6 +41,12 @@ CLAIM_PATTERN = re.compile(
     r"|i have (added|deleted|removed|marked|scheduled|moved|renamed|cleared|updated))\b",
     re.IGNORECASE,
 )
+
+
+def _log(label, value):
+    """Print a debug line to the backend terminal (only when DEBUG is True)."""
+    if DEBUG:
+        print(f"[DEBUG] {label}: {str(value)[:300]}")
 
 
 def _date_context():
@@ -101,17 +112,18 @@ Available tools:
 {tool_descriptions}
 
 RULES:
-1. If the user's request matches a tool's purpose, respond with ONLY a JSON object, nothing else - no explanation, no extra text.
-2. Format: {{"tool": "<function_name>", "args": {{}}}}
-3. Only use tool names from the list above. NEVER invent a tool name.
-4. In "args", use ONLY the exact argument names listed for that tool. Never invent or rename arguments. Leave out any optional argument you do not need.
-5. If the user asks for something that NO tool above can do (for example sending an email, setting a reminder, or checking the weather), reply in plain text: say clearly that you cannot do that yet, and mention what you CAN do with your tools.
-6. NEVER say that something was added, deleted, changed or scheduled unless a tool actually ran. You cannot change anything without a tool call.
-7. Plain text is also fine for normal conversation and greetings.
-8. DATES AND TIMES: convert the user's words into numbers using the calendar above. If the user gives a date only, pass YYYY-MM-DD. If the user gives a time too, pass YYYY-MM-DD HH:MM using the 24-hour clock (4 PM becomes 16:00, 9 AM becomes 09:00, noon is 12:00). Never pass dates or times as words. If the user gives no date, leave the date argument out.
-9. The RECENT CONVERSATION block at the end is for context only, to understand words like "it" or "that task". Those earlier Bujji replies were written AFTER a tool had already run. Do NOT copy their style. Your answer to the NEWEST user message must follow rules 1 to 8: a request that needs a tool is answered with ONLY the JSON object.
-10. Do NOT ask the user for confirmation before doing something they clearly asked for, such as marking a task done. Call the tool right away. Only ask a question if a tool result says more than one item matches.
-11. TASKS versus EVENTS: a TASK is something to get done (submit the report, buy milk), possibly with a deadline. An EVENT is something that happens at a specific time (a meeting, a class, an appointment, a call). Use the event tools for events and the task tools for tasks. If the user wants an event but gave no time, ask them for the time in plain text.
+1. If the user's request matches a tool's purpose, respond with ONLY JSON tool calls, nothing else - no explanation, no extra text.
+2. Format of one call: {{"tool": "<function_name>", "args": {{}}}}
+3. If the user asks for several things in one message, output one JSON tool call per request, each on its own line, in the order they were asked (at most 5).
+4. Only use tool names from the list above. NEVER invent a tool name.
+5. In "args", use ONLY the exact argument names listed for that tool. Never invent or rename arguments. Leave out any optional argument you do not need.
+6. If the user asks for something that NO tool above can do (for example sending an email, setting a reminder, or checking the weather), reply in plain text: say clearly that you cannot do that yet, and mention what you CAN do with your tools.
+7. NEVER say that something was added, deleted, changed or scheduled unless a tool actually ran. You cannot change anything without a tool call.
+8. Plain text is also fine for normal conversation and greetings.
+9. DATES AND TIMES: convert the user's words into numbers using the calendar above. If the user gives a date only, pass YYYY-MM-DD. If the user gives a time too, pass YYYY-MM-DD HH:MM using the 24-hour clock (4 PM becomes 16:00, 9 AM becomes 09:00, noon is 12:00). Never pass dates or times as words. If the user gives no date, leave the date argument out.
+10. The RECENT CONVERSATION block at the end is for context only, to understand words like "it" or "that task". Those earlier Bujji replies were written AFTER a tool had already run. Do NOT copy their style. Your answer to the NEWEST user message must follow rules 1 to 9: a request that needs a tool is answered with ONLY the JSON tool call(s).
+11. Do NOT ask the user for confirmation before doing something they clearly asked for, such as marking a task done. Call the tool right away. Only ask a question if a tool result says more than one item matches.
+12. TASKS versus EVENTS: a TASK is something to get done (submit the report, buy milk), possibly with a deadline. An EVENT is something that happens at a specific time (a meeting, a class, an appointment, a call). Use the event tools for events and the task tools for tasks. If the user wants an event but gave no time, ask them for the time in plain text.
 
 EXAMPLES:
 User: "rename the dentist task to book dentist appointment"
@@ -122,23 +134,33 @@ User: "I have a project meeting tomorrow at 4 PM"
 You: {{"tool": "add_event", "args": {{"title": "project meeting", "start_time": "<tomorrow's date from the calendar> 16:00"}}}}
 User: "what is on my schedule tomorrow"
 You: {{"tool": "list_events", "args": {{"date": "<tomorrow's date from the calendar>"}}}}
+User: "mark the milk task as done and show my schedule tomorrow"
+You:
+{{"tool": "complete_task", "args": {{"title": "milk"}}}}
+{{"tool": "list_events", "args": {{"date": "<tomorrow's date from the calendar>"}}}}
 
 RECENT CONVERSATION (context only):
 {history_text}
 """
 
 
-def _try_parse_tool_call(reply: str):
-    try:
-        return json.loads(reply)
-    except json.JSONDecodeError:
-        match = re.search(r'\{.*\}', reply, re.DOTALL)
-        if match:
+def _parse_tool_calls(reply: str):
+    """Find EVERY JSON object in the reply that looks like a tool call."""
+    decoder = json.JSONDecoder()
+    calls = []
+    i = 0
+    while i < len(reply):
+        if reply[i] == "{":
             try:
-                return json.loads(match.group())
+                obj, end = decoder.raw_decode(reply, i)
+                if isinstance(obj, dict) and "tool" in obj:
+                    calls.append(obj)
+                i = end
+                continue
             except json.JSONDecodeError:
-                return None
-    return None
+                pass
+        i += 1
+    return calls
 
 
 def _ask(messages):
@@ -149,12 +171,32 @@ def _ask(messages):
     return response.choices[0].message.content.strip()
 
 
-def _is_tool_call(tool_call):
-    return bool(tool_call) and "tool" in tool_call
+def _run_calls(calls):
+    """Run each tool call in order and collect what every tool returned."""
+    results = []
+    for call in calls[:MAX_TOOL_CALLS]:
+        name = call.get("tool")
+        args = call.get("args", {})
+        if not isinstance(args, dict):
+            args = {}
+        func = AVAILABLE_FUNCTIONS.get(name)
+        _log("tool call", f"{name} {args}")
+
+        if func is None:
+            results.append({"tool": name, "result": {"error": "There is no such tool."}})
+            continue
+        try:
+            result = func(**args)
+        except Exception as e:
+            result = {"error": f"The tool failed: {e}"}
+        _log("tool result", result)
+        results.append({"tool": name, "args": args, "result": result})
+    return results
 
 
 def run_agent(user_message: str, history=None) -> str:
     recent = _clean_history(history)
+    _log("---- new message", user_message)
 
     messages = [
         {"role": "system", "content": _build_system_prompt(recent)},
@@ -162,55 +204,51 @@ def run_agent(user_message: str, history=None) -> str:
     ]
 
     reply = _ask(messages)
-    tool_call = _try_parse_tool_call(reply)
+    _log("model reply 1", reply)
+    calls = _parse_tool_calls(reply)
 
     # Safety net: a plain-text reply that CLAIMS an action, with no tool run, is fake.
-    if not _is_tool_call(tool_call) and CLAIM_PATTERN.search(reply):
+    if not calls and CLAIM_PATTERN.search(reply):
+        _log("safety net", "fake claim detected, retrying once")
         retry_messages = messages + [
             {"role": "assistant", "content": reply},
             {"role": "user", "content": (
                 "No tool was run, so nothing has been done yet. Answer my request again "
-                "with ONLY the JSON tool call. If a needed detail (like the time) is "
+                "with ONLY the JSON tool call(s). If a needed detail (like the time) is "
                 "missing, ask me for it instead of claiming it is done."
             )},
         ]
         reply = _ask(retry_messages)
-        tool_call = _try_parse_tool_call(reply)
-        if not _is_tool_call(tool_call) and CLAIM_PATTERN.search(reply):
+        _log("model reply 2 (retry)", reply)
+        calls = _parse_tool_calls(reply)
+        if not calls and CLAIM_PATTERN.search(reply):
             return "I could not complete that, so nothing was changed. Please try rephrasing your request."
 
     # Plain text reply (no tool requested)
-    if not _is_tool_call(tool_call):
+    if not calls:
+        _log("no tool called", "plain text answer")
         return reply
 
-    func_name = tool_call["tool"]
-    func_args = tool_call.get("args", {})
-    func = AVAILABLE_FUNCTIONS.get(func_name)
+    results = _run_calls(calls)
 
-    # The model asked for a tool that does not exist
-    if func is None:
+    # Every call named a tool that does not exist
+    if all(r["result"] == {"error": "There is no such tool."} for r in results):
         return "Sorry, I can't do that yet. I don't have a tool for it."
 
-    # Run the real tool; never hide a failure
-    try:
-        result = func(**func_args)
-    except Exception as e:
-        return f"I tried to do that, but it failed: {e}"
-
-    # Ask the model to phrase a reply based ONLY on the real result
+    # Ask the model to phrase ONE reply covering every real result
     followup_messages = messages + [
         {"role": "assistant", "content": reply},
         {"role": "user", "content": (
-            f"Tool result: {json.dumps(result)}\n"
-            "Reply to the user naturally, using ONLY this result. "
-            "If the result is null, false, or empty because nothing was found or changed, "
-            "say clearly that it did not work or nothing matched. "
+            f"Tool results, in the order they ran: {json.dumps(results, default=str)}\n"
+            "Reply to the user naturally, using ONLY these results. Cover EVERY result, "
+            "one by one, in order. "
+            "If a result is null, false, empty, or contains an error, say clearly which "
+            "request did not work and why, instead of calling it done. "
             "When listing tasks or events, show each item's real id number exactly as it "
             "appears in the result; never renumber them. "
-            "If the result contains warning_overlaps_with, tell the user the new time "
+            "If a result contains warning_overlaps_with, tell the user the new time "
             "clashes with those events. "
-            "If the result contains an error, explain it to the user and ask for what is missing. "
-            "Do not claim anything the result does not show."
+            "Do not claim anything the results do not show."
         )}
     ]
     return _ask(followup_messages)
