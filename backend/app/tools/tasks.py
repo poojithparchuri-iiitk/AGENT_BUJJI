@@ -77,6 +77,29 @@ def complete_task(task_id=None, title=None):
     return _row_to_dict(row)
 
 
+def edit_task(task_id=None, title=None, new_title=None, new_due_date=None):
+    """Change the title and/or due date of one task."""
+    if not new_title and not new_due_date:
+        return {"error": "Nothing to change. Ask the user what the new title or new due date should be."}
+
+    rows = _find_tasks(task_id, title)
+    if not rows:
+        return None
+    if len(rows) > 1:
+        return _ambiguous(rows)
+
+    target_id = rows[0]["id"]
+    conn = get_connection()
+    if new_title:
+        conn.execute("UPDATE tasks SET title = ? WHERE id = ?", (new_title, target_id))
+    if new_due_date:
+        conn.execute("UPDATE tasks SET due_date = ? WHERE id = ?", (new_due_date, target_id))
+    conn.commit()
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (target_id,)).fetchone()
+    conn.close()
+    return _row_to_dict(row)
+
+
 def delete_task(task_id=None, title=None):
     rows = _find_tasks(task_id, title)
     if not rows:
@@ -123,6 +146,17 @@ TOOL_MANIFEST = [
             "title": "string, words from the task title (use when the ID is not known)",
         },
         "function": complete_task,
+    },
+    {
+        "name": "edit_task",
+        "description": "Change the title and/or the due date of one existing task",
+        "args": {
+            "task_id": "integer, only if the ID is known",
+            "title": "string, words from the CURRENT title, used to find the task",
+            "new_title": "string, the new title (optional)",
+            "new_due_date": "string YYYY-MM-DD, the new due date (optional)",
+        },
+        "function": edit_task,
     },
     {
         "name": "delete_task",
