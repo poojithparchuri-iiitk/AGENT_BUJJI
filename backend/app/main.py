@@ -1,11 +1,20 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent import run_agent
-from tools.reminders import get_due_reminders, mark_fired
+from notifier import start_watcher
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Runs once when the backend starts: begin watching for due reminders
+    start_watcher()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,11 +39,3 @@ def read_root():
 def chat(request: ChatRequest):
     reply = run_agent(request.message, request.history)
     return {"reply": reply}
-
-
-@app.get("/reminders/due")
-def due_reminders():
-    """Reminders whose time has arrived. Each one is returned only once."""
-    due = get_due_reminders()
-    mark_fired([r["id"] for r in due])
-    return {"due": due}
