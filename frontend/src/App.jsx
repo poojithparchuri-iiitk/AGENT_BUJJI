@@ -1,17 +1,71 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './App.css'
 
 const API = 'http://127.0.0.1:8000'
 // Sending or discarding an email needs this header, which only this page adds
 const UI_HEADERS = { 'X-Bujji-UI': '1' }
 
+// Example requests shown on the empty screen. Clicking one fills the box; it does not send.
+const STARTERS = [
+  'Remind me to stretch in 10 minutes',
+  "What's on my schedule tomorrow?",
+  'Add a task: submit the report',
+  'I finished my SQL assignment',
+]
+
+// Turns **bold** in a reply into real bold text. React escapes everything else.
+function renderText(text) {
+  return String(text)
+    .split(/(\*\*[^*]+\*\*)/g)
+    .map((part, i) =>
+      part.length > 4 && part.startsWith('**') && part.endsWith('**') ? (
+        <strong key={i}>{part.slice(2, -2)}</strong>
+      ) : (
+        part
+      )
+    )
+}
+
+// Bujji's face. state is "idle" or "thinking"; later, voice mode can reuse these states.
+function BujjiMark({ state }) {
+  return (
+    <svg
+      className="mark"
+      data-state={state}
+      viewBox="0 0 48 48"
+      role="img"
+      aria-label={state === 'thinking' ? 'Bujji is thinking' : 'Bujji'}
+    >
+      <rect className="mark-body" x="4" y="6" width="40" height="36" rx="16" />
+      <g className="mark-eyes">
+        <ellipse className="mark-eye" cx="18" cy="23" rx="3.2" ry="4.2" />
+        <ellipse className="mark-eye" cx="30" cy="23" rx="3.2" ry="4.2" />
+      </g>
+      <path className="mark-mouth" d="M19 32 Q24 36 29 32" />
+    </svg>
+  )
+}
+
 function App() {
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
   const [drafts, setDrafts] = useState([])
-  const [busyId, setBusyId] = useState(null)
+  const [busy, setBusy] = useState(null) // { id, action } while a draft is being sent or discarded
   const [notice, setNotice] = useState(null)
+
+  const endRef = useRef(null)
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    document.title = 'Agent Bujji'
+  }, [])
+
+  // Keep the newest message in view
+  useEffect(() => {
+    const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    endRef.current?.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'end' })
+  }, [messages, loading, drafts.length])
 
   const loadDrafts = async () => {
     try {
@@ -30,7 +84,7 @@ function App() {
 
   const sendMessage = async () => {
     const text = input.trim()
-    if (!text) return
+    if (!text || loading) return
 
     // The last 6 earlier messages become Bujji's short-term memory
     const history = messages.slice(-6)
@@ -54,10 +108,11 @@ function App() {
 
     await loadDrafts()
     setLoading(false)
+    inputRef.current?.focus()
   }
 
   const sendDraft = async (draft) => {
-    setBusyId(draft.id)
+    setBusy({ id: draft.id, action: 'send' })
     setNotice(null)
     try {
       const res = await fetch(`${API}/email/drafts/${draft.id}/send`, {
@@ -74,11 +129,11 @@ function App() {
       setNotice({ type: 'error', text: 'Not sent: could not reach the backend.' })
     }
     await loadDrafts()
-    setBusyId(null)
+    setBusy(null)
   }
 
   const discardDraft = async (draft) => {
-    setBusyId(draft.id)
+    setBusy({ id: draft.id, action: 'discard' })
     setNotice(null)
     try {
       await fetch(`${API}/email/drafts/${draft.id}/discard`, {
@@ -87,82 +142,131 @@ function App() {
       })
       setNotice({ type: 'success', text: 'Draft discarded. Nothing was sent.' })
     } catch (err) {
-      setNotice({ type: 'error', text: 'Could not discard: backend not reachable.' })
+      setNotice({ type: 'error', text: 'Could not discard the draft: backend not reachable.' })
     }
     await loadDrafts()
-    setBusyId(null)
+    setBusy(null)
+  }
+
+  const pickStarter = (text) => {
+    setInput(text)
+    inputRef.current?.focus()
   }
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter') sendMessage()
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault()
+      sendMessage()
+    }
   }
 
   return (
-    <div style={{ maxWidth: '600px', margin: '40px auto', fontFamily: 'sans-serif' }}>
-      <h1>Agent Bujji</h1>
+    <div className="app">
+      <header className="top">
+        <BujjiMark state={loading ? 'thinking' : 'idle'} />
+        <h1 className="wordmark">Bujji</h1>
+      </header>
 
-      <div style={{ border: '1px solid #ccc', borderRadius: '8px', padding: '16px', minHeight: '300px', marginBottom: '16px' }}>
+      <main className="chat" role="log" aria-label="Conversation">
+        {messages.length === 0 && !loading && (
+          <section className="empty">
+            <p className="empty-hello">Hi, I'm Bujji. What are we doing today?</p>
+            <div className="starters">
+              {STARTERS.map((s) => (
+                <button key={s} className="starter" onClick={() => pickStarter(s)}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
         {messages.map((msg, i) => (
-          <div key={i} style={{ marginBottom: '10px', textAlign: msg.role === 'user' ? 'right' : 'left' }}>
-            <strong>{msg.role === 'user' ? 'You' : 'Bujji'}:</strong> {msg.content}
+          <div key={i} className={`msg ${msg.role === 'user' ? 'msg-user' : 'msg-bujji'}`}>
+            <p>{renderText(msg.content)}</p>
           </div>
         ))}
-        {loading && <div>Bujji is typing...</div>}
-      </div>
 
-      {notice && (
-        <div
-          style={{
-            background: notice.type === 'success' ? '#d1e7dd' : '#f8d7da',
-            color: notice.type === 'success' ? '#0f5132' : '#842029',
-            borderRadius: '8px',
-            padding: '10px 14px',
-            marginBottom: '12px',
-          }}
-        >
-          {notice.text}
-        </div>
-      )}
-
-      {drafts.map((d) => (
-        <div
-          key={d.id}
-          style={{
-            background: '#eef4ff',
-            color: '#1b2a41',
-            border: '1px solid #b6ccf5',
-            borderRadius: '8px',
-            padding: '12px 16px',
-            marginBottom: '12px',
-          }}
-        >
-          <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '6px' }}>
-            EMAIL DRAFT (not sent yet)
+        {loading && (
+          <div className="msg msg-bujji" role="status" aria-label="Bujji is thinking">
+            <span className="dots">
+              <i />
+              <i />
+              <i />
+            </span>
           </div>
-          <div><strong>To:</strong> {d.to_name ? `${d.to_name} <${d.to_email}>` : d.to_email}</div>
-          <div><strong>Subject:</strong> {d.subject}</div>
-          <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', margin: '10px 0' }}>{d.body}</pre>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button onClick={() => sendDraft(d)} disabled={busyId === d.id}>
-              {busyId === d.id ? 'Working...' : 'Send'}
-            </button>
-            <button onClick={() => discardDraft(d)} disabled={busyId === d.id}>
-              Discard
-            </button>
-          </div>
-        </div>
-      ))}
+        )}
 
-      <div style={{ display: 'flex', gap: '8px' }}>
-        <input
-          style={{ flex: 1, padding: '8px' }}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Type a message..."
-        />
-        <button onClick={sendMessage}>Send</button>
-      </div>
+        <div ref={endRef} />
+      </main>
+
+      <footer className="dock">
+        {notice && (
+          <div
+            className={`notice notice-${notice.type}`}
+            role={notice.type === 'error' ? 'alert' : 'status'}
+          >
+            {notice.text}
+          </div>
+        )}
+
+        {drafts.length > 0 && (
+          <div className="drafts">
+            {drafts.map((d) => (
+              <article className="draft" key={d.id}>
+                <span className="chip">Not sent yet</span>
+                <dl className="draft-meta">
+                  <dt>To</dt>
+                  <dd>{d.to_name ? `${d.to_name} <${d.to_email}>` : d.to_email}</dd>
+                  <dt>Subject</dt>
+                  <dd>{d.subject}</dd>
+                </dl>
+                <div className="draft-body">
+                  <p className="draft-text">{d.body}</p>
+                </div>
+                <div className="draft-actions">
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => sendDraft(d)}
+                    disabled={busy?.id === d.id}
+                  >
+                    {busy?.id === d.id && busy.action === 'send' ? 'Sending…' : 'Send email'}
+                  </button>
+                  <button
+                    className="btn btn-quiet"
+                    onClick={() => discardDraft(d)}
+                    disabled={busy?.id === d.id}
+                  >
+                    {busy?.id === d.id && busy.action === 'discard' ? 'Discarding…' : 'Discard draft'}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+
+        <div className="composer">
+          <input
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Message Bujji"
+            aria-label="Message Bujji"
+            autoFocus
+          />
+          <button
+            className="send"
+            onClick={sendMessage}
+            disabled={loading || !input.trim()}
+            aria-label="Send message"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 19V5M5 12l7-7 7 7" />
+            </svg>
+          </button>
+        </div>
+      </footer>
     </div>
   )
 }

@@ -8,6 +8,7 @@ from tools.schedule import TOOL_MANIFEST as SCHEDULE_MANIFEST
 from tools.reminders import TOOL_MANIFEST as REMINDERS_MANIFEST
 from tools.activity import TOOL_MANIFEST as ACTIVITY_MANIFEST
 from tools.email_drafts import TOOL_MANIFEST as EMAIL_MANIFEST
+from draft_check import find_invented_details
 
 load_dotenv()
 
@@ -146,12 +147,12 @@ RULES:
 5. In "args", use ONLY the exact argument names listed for that tool. Never invent or rename arguments. Leave out any optional argument you do not need.
 6. If the user asks for something that NO tool above can do (for example checking the weather), reply in plain text: say clearly that you cannot do that yet, and mention what you CAN do with your tools.
 7. NEVER say that something was added, deleted, changed, scheduled, set, logged, saved or sent unless a tool actually ran. You cannot change anything without a tool call.
-8. Plain text is also fine for normal conversation and greetings.
+8. Plain text is also fine for normal conversation and greetings. Keep replies short and do not use emojis.
 9. DATES AND TIMES: convert the user's words into numbers using the calendar above. If the user gives a date only, pass YYYY-MM-DD. If the user gives a time too, pass YYYY-MM-DD HH:MM using the 24-hour clock (4 PM becomes 16:00, 9 AM becomes 09:00, noon is 12:00). For "in 30 minutes" or "in 2 hours", add that amount to the current time shown above and pass the result. Never pass dates or times as words. If the user gives no date, leave the date argument out.
 10. The RECENT CONVERSATION block at the end is for context only, to understand words like "it" or "that task". Those earlier Bujji replies were written AFTER a tool had already run. Do NOT copy their style. Your answer to the NEWEST user message must follow rules 1 to 9: a request that needs a tool is answered with ONLY the JSON tool call(s).
 11. Do NOT ask the user for confirmation before doing something they clearly asked for, such as marking a task done. Call the tool right away. Only ask a question if a tool result says more than one item matches.
 12. TASKS, EVENTS, REMINDERS and ACTIVITIES: a TASK is something still to get done (submit the report, buy milk), possibly with a deadline. An EVENT is something that happens at a specific time (a meeting, a class, an appointment, a call). A REMINDER is an alert at a specific time ("remind me to ..."). An ACTIVITY is something the user has ALREADY done ("I finished my SQL assignment", "I went for a run", "I studied for two hours"): use log_activity. When the user says "mark ... as done" or "complete the ... task", that is complete_task, NOT log_activity. Never log something in the future as an activity. If the user wants an event or a reminder but gave no time, ask them for the time in plain text.
-13. EMAIL: you can only WRITE email drafts with draft_email. You can NEVER send an email: the user sends it with a Send button on the page. "Send an email to X" or "email X" means call draft_email. Write the body yourself from what the user wants to say: a short greeting with the person's name, the message, then {sign_off_rule}. NEVER write placeholders like [Your Name]. Use save_contact when the user tells you someone's email address. If the user says "send it", "yes send" or "go ahead" about a draft that already exists, do NOT call draft_email again: reply in plain text that you cannot send emails yourself and that they should click the Send button on the draft. NEVER say that an email was sent.
+13. EMAIL: you can only WRITE email drafts with draft_email. You can NEVER send an email: the user sends it with the Send email button under the chat. "Send an email to X" or "email X" means call draft_email. Write the body yourself from what the user wants to say: a short greeting with the person's name, the message, then {sign_off_rule}. Use ONLY facts the user gave: never add dates, times, places or other details they did not mention, in the subject or the body. NEVER write placeholders like [Your Name]. Use save_contact when the user tells you someone's email address. If the user says "send it", "yes send" or "go ahead" about a draft that already exists, do NOT call draft_email again: reply in plain text that you cannot send emails yourself and that they should click the Send email button on the draft. NEVER say that an email was sent.
 
 EXAMPLES:
 User: "rename the dentist task to book dentist appointment"
@@ -256,6 +257,18 @@ def _draft_created(results):
     )
 
 
+def _draft_warnings(results, said_text):
+    """Days and times in a draft that the user never mentioned."""
+    warnings = []
+    for r in results:
+        res = r.get("result")
+        if r.get("tool") == "draft_email" and isinstance(res, dict) and "error" not in res:
+            for item in find_invented_details(said_text, res.get("subject", ""), res.get("body", "")):
+                if item not in warnings:
+                    warnings.append(item)
+    return warnings
+
+
 def run_agent(user_message: str, history=None) -> str:
     recent = _clean_history(history)
     _log("---- new message", user_message)
@@ -302,8 +315,8 @@ def run_agent(user_message: str, history=None) -> str:
         {"role": "assistant", "content": reply},
         {"role": "user", "content": (
             f"Tool results, in the order they ran: {json.dumps(results, default=str)}\n"
-            "Reply to the user naturally, using ONLY these results. Cover EVERY result, "
-            "one by one, in order. "
+            "Reply to the user naturally and briefly, without emojis, using ONLY these results. "
+            "Cover EVERY result, one by one, in order. "
             "If a result is null, false, empty, or contains an error, say clearly which "
             "request did not work and why, instead of calling it done. "
             "When listing tasks, events, reminders, activities or contacts, show each item's "
@@ -312,9 +325,10 @@ def run_agent(user_message: str, history=None) -> str:
             "in a friendly way. An empty activity list means nothing was logged for that day. "
             "If a result contains warning_overlaps_with, tell the user the new time "
             "clashes with those events. "
-            "If a result is an email draft, say in one or two sentences who it is addressed "
-            "to and what the subject is, and NEVER say the email was sent: it is only a draft "
-            "(the page adds the instructions for sending). "
+            "If a result is an email draft, say in ONE short sentence who it is addressed to. "
+            "Do NOT repeat its subject or body, and do not mention buttons or how to send it: "
+            "the page shows the draft and the code adds the instructions. "
+            "NEVER say the email was sent. "
             "If a result says no email address is saved for someone, ask the user for the "
             "address and offer to save it as a contact. "
             "Do not claim anything the results do not show."
@@ -324,8 +338,15 @@ def run_agent(user_message: str, history=None) -> str:
 
     # Added by code, so it never depends on the model remembering to say it
     if _draft_created(results):
+        # What the user actually said: this message plus their earlier ones in this chat
+        said_text = " ".join([user_message] + [m["content"] for m in recent if m["role"] == "user"])
+        extra = _draft_warnings(results, said_text)
+        if extra:
+            _log("draft check", extra)
+            quoted = ", ".join(f'"{w}"' for w in extra)
+            final += f"\n\nCheck the draft: it mentions {quoted}, which was not in your request."
         final += (
-            "\n\nThis email is only a draft and has NOT been sent. "
-            "Review it below and click Send if it looks right."
+            "\n\nThis draft has not been sent. "
+            "Click Send email below if it looks right."
         )
     return final
