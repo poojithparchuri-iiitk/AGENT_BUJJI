@@ -14,8 +14,13 @@ STOP_WORDS = {
 
 # Things that must never be stored. This is a pattern check, not a guarantee.
 SENSITIVE_WORDS = re.compile(
-    r"password|passcode|passphrase|api[ _-]?key|secret|\botp\b|\bcvv\b"
-    r"|card number|pin (?:code|number)|\btoken\b",
+    r"password|passcode|passphrase|api[ _-]?key|secret|credentials?"
+    r"|\botp\b|\bone[ -]?time\b|\bcvv\b|\bpin\b"
+    r"|(?:card|account)[ _-]?(?:number|no\b|details)"
+    r"|(?:security|verification|login|unlock) code"
+    r"|\bcode\b\D{0,15}\d{4,}"
+    r"|aadhaar|aadhar|passport (?:number|no\b)|\bssn\b|social security"
+    r"|\btoken\b",
     re.IGNORECASE,
 )
 SENSITIVE_SHAPES = re.compile(
@@ -77,7 +82,7 @@ def remember_fact(fact: str):
         }
     if SENSITIVE_WORDS.search(text) or SENSITIVE_SHAPES.search(text):
         return {
-            "error": "I do not store passwords, keys, codes or card numbers. "
+            "error": "I do not store passwords, PINs, keys, codes, or card and account numbers. "
                      "Tell the user this was NOT saved."
         }
 

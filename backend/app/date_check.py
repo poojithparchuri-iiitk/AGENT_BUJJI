@@ -23,6 +23,24 @@ UNCLEAR = re.compile(
     re.IGNORECASE,
 )
 
+# A time of day the user actually gave: "4 PM", "16:30", "at 8", "noon", "in 10 minutes"
+TIME_GIVEN = re.compile(
+    r"\b\d{1,2}(?::\d{2})?\s?(?:a\.?m\.?|p\.?m\.?)(?![a-z])"
+    r"|\b\d{1,2}:\d{2}\b"
+    r"|(?:\bat|@)\s*\d{1,2}\b"
+    r"|\b\d{1,2}\s?o['\u2019]?clock\b"
+    r"|\b(?:noon|midnight|midday)\b"
+    r"|\bin\s+(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|fifteen"
+    r"|twenty|thirty|forty|half(?: an)?)\s+(?:minutes?|mins?|hours?|hrs?)\b",
+    re.IGNORECASE,
+)
+
+
+def has_time_of_day(text):
+    """True if the text gives a time of day (a clock time, noon or midnight,
+    or a delay such as 'in 10 minutes'). Words like 'morning' or 'tonight' do not count."""
+    return bool(TIME_GIVEN.search(str(text or "")))
+
 
 def _references(text, today):
     """The days the user named (today, tomorrow, Monday...) and every date they could mean."""

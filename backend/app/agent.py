@@ -10,7 +10,7 @@ from tools.activity import TOOL_MANIFEST as ACTIVITY_MANIFEST
 from tools.email_drafts import TOOL_MANIFEST as EMAIL_MANIFEST
 from tools.memory import TOOL_MANIFEST as MEMORY_MANIFEST, get_remembered_facts
 from draft_check import find_invented_details
-from date_check import find_date_mismatches
+from date_check import find_date_mismatches, has_time_of_day
 
 load_dotenv()
 
@@ -48,6 +48,13 @@ MAX_HISTORY = 6
 MAX_HISTORY_CHARS = 400
 # Most tool calls Bujji may run for a single user message
 MAX_TOOL_CALLS = 5
+
+# Returned instead of running add_event / add_reminder / a time edit when the user
+# gave no time of day. Without this, the model invents one.
+NO_TIME_ERROR = {
+    "error": "The user did not give a time of day, so nothing was saved. "
+             "Ask the user what time they want. Do NOT choose a time yourself."
+}
 
 # Phrases that claim an action was done. If the model writes one of these in a
 # plain-text reply WITHOUT having run a tool, the claim is fake.
@@ -166,7 +173,7 @@ RULES:
 9. DATES AND TIMES: convert the user's words into numbers using the calendar above. If the user gives a date only, pass YYYY-MM-DD. If the user gives a time too, pass YYYY-MM-DD HH:MM using the 24-hour clock (4 PM becomes 16:00, 9 AM becomes 09:00, noon is 12:00). When the user names a weekday (Monday, Friday ...), copy the date printed next to the nearest upcoming one in the calendar above; NEVER calculate a date yourself. For "in 30 minutes" or "in 2 hours", add that amount to the current time shown above and pass the result. Never pass dates or times as words. If the user gives no date, leave the date argument out.
 10. The RECENT CONVERSATION block at the end is for context only, to understand words like "it" or "that task". Those earlier Bujji replies were written AFTER a tool had already run. Do NOT copy their style. Your answer to the NEWEST user message must follow rules 1 to 9: a request that needs a tool is answered with ONLY the JSON tool call(s).
 11. Do NOT ask the user for confirmation before doing something they clearly asked for, such as marking a task done. Call the tool right away. Only ask a question if a tool result says more than one item matches.
-12. TASKS, EVENTS, REMINDERS and ACTIVITIES: a TASK is something still to get done (submit the report, buy milk), possibly with a deadline. An EVENT is something that happens at a specific time (a meeting, a class, an appointment, a call). A REMINDER is an alert at a specific time ("remind me to ..."). An ACTIVITY is something the user has ALREADY done ("I finished my SQL assignment", "I went for a run", "I studied for two hours"): use log_activity. When the user says "mark ... as done" or "complete the ... task", that is complete_task, NOT log_activity. Never log something in the future as an activity. If the user wants an event or a reminder but gave no time, ask them for the time in plain text.
+12. TASKS, EVENTS, REMINDERS and ACTIVITIES: a TASK is something still to get done (submit the report, buy milk), possibly with a deadline. An EVENT is something that happens at a specific time (a meeting, a class, an appointment, a call). A REMINDER is an alert at a specific time ("remind me to ..."). An ACTIVITY is something the user has ALREADY done ("I finished my SQL assignment", "I went for a run", "I studied for two hours"): use log_activity. When the user says "mark ... as done" or "complete the ... task", that is complete_task, NOT log_activity. Never log something in the future as an activity. If the user wants an event or a reminder but gave no time, ask them for the time in plain text. NEVER choose or guess a time yourself: if the user's message has no clock time (words like "morning", "evening" or "tonight" are not a clock time), do not call add_event, add_reminder or edit_event; ask for the time instead.
 13. EMAIL: you can only WRITE email drafts with draft_email. You can NEVER send an email: the user sends it with the Send email button under the chat. "Send an email to X" or "email X" means call draft_email. Write the body yourself from what the user wants to say: a short greeting with the person's name, the message, then {sign_off_rule}. Use ONLY facts the user gave: never add dates, times, places or other details they did not mention, in the subject or the body. NEVER write placeholders like [Your Name]. Use save_contact when the user tells you someone's email address. If the user says "send it", "yes send" or "go ahead" about a draft that already exists, do NOT call draft_email again: reply in plain text that you cannot send emails yourself and that they should click the Send email button on the draft. NEVER say that an email was sent.
 14. MEMORY: call remember_fact ONLY when the user explicitly asks you to remember or note something ("remember that ...", "note that ..."). NEVER save anything on your own, and never save just because the user mentioned a fact. Write it as one short plain statement. Call list_memories when the user asks what you remember. Call forget_memory when the user asks you to forget something. Use the remembered facts above to understand who or what the user means (if you remember that Rahul is the user's project partner, then "email my project partner" means email Rahul), and answer questions they cover in plain text. Do not bring them up otherwise. If remember_fact returns an error, tell the user it was NOT saved and why.
 
@@ -248,7 +255,19 @@ def _ask(messages):
     return response.choices[0].message.content.strip()
 
 
-def _run_calls(calls):
+def _time_is_missing(name, args, user_message):
+    """True if this call needs a time of day but the user's message has none,
+    which means the model must have invented one."""
+    if has_time_of_day(user_message):
+        return False
+    if name in ("add_event", "add_reminder"):
+        return True
+    if name == "edit_event":
+        return bool(args.get("new_start_time") or args.get("new_end_time"))
+    return False
+
+
+def _run_calls(calls, user_message):
     """Run each tool call in order and collect what every tool returned."""
     results = []
     for call in calls[:MAX_TOOL_CALLS]:
@@ -262,6 +281,13 @@ def _run_calls(calls):
         if func is None:
             results.append({"tool": name, "result": {"error": "There is no such tool."}})
             continue
+
+        # The user gave no time of day, so the model would have to invent one: refuse
+        if _time_is_missing(name, args, user_message):
+            _log("time check", f"{name} refused: no time of day in the user's message")
+            results.append({"tool": name, "args": args, "result": NO_TIME_ERROR})
+            continue
+
         try:
             result = func(**args)
         except Exception as e:
@@ -328,7 +354,7 @@ def run_agent(user_message: str, history=None) -> str:
         _log("no tool called", "plain text answer")
         return reply
 
-    results = _run_calls(calls)
+    results = _run_calls(calls, user_message)
 
     # Every call named a tool that does not exist
     if all(r["result"] == {"error": "There is no such tool."} for r in results):
@@ -368,6 +394,10 @@ def run_agent(user_message: str, history=None) -> str:
     final = _ask(followup_messages)
 
     # Everything below is added by code, so it never depends on the model remembering to say it
+
+    # The user gave no time, so nothing was saved: make sure the reply asks for it
+    if any(r["result"] == NO_TIME_ERROR for r in results) and "time" not in final.lower():
+        final += "\n\nI did not save it because you did not give a time. What time should I use?"
 
     # Only the first few requests in a message are run
     if len(calls) > MAX_TOOL_CALLS:
