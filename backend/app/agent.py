@@ -10,7 +10,7 @@ from tools.activity import TOOL_MANIFEST as ACTIVITY_MANIFEST
 from tools.email_drafts import TOOL_MANIFEST as EMAIL_MANIFEST
 from tools.memory import TOOL_MANIFEST as MEMORY_MANIFEST, get_remembered_facts
 from draft_check import find_invented_details
-from date_check import find_date_mismatches, has_time_of_day
+from date_check import find_date_mismatches, has_time_of_day, repair_weekday_dates
 
 load_dotenv()
 
@@ -268,8 +268,11 @@ def _time_is_missing(name, args, user_message):
 
 
 def _run_calls(calls, user_message):
-    """Run each tool call in order and collect what every tool returned."""
+    """Run each tool call in order and collect what every tool returned.
+    Returns (results, date_fixes): date_fixes lists the weekday corrections that were
+    really applied, one short sentence each."""
     results = []
+    date_fixes = []
     for call in calls[:MAX_TOOL_CALLS]:
         name = call.get("tool")
         args = call.get("args", {})
@@ -288,13 +291,24 @@ def _run_calls(calls, user_message):
             results.append({"tool": name, "args": args, "result": NO_TIME_ERROR})
             continue
 
+        # The user named one weekday but the model picked a date on another: use the named one
+        args, notes = repair_weekday_dates(user_message, name, args)
+
         try:
             result = func(**args)
         except Exception as e:
             result = {"error": f"The tool failed: {e}"}
         _log("tool result", result)
         results.append({"tool": name, "args": args, "result": result})
-    return results
+
+        # Only report a date fix if the tool really did something
+        worked = not (result is None or result is False or (isinstance(result, dict) and "error" in result))
+        if worked:
+            for note in notes:
+                _log("date repair", note)
+                if note not in date_fixes:
+                    date_fixes.append(note)
+    return results, date_fixes
 
 
 def _draft_created(results):
@@ -354,7 +368,7 @@ def run_agent(user_message: str, history=None) -> str:
         _log("no tool called", "plain text answer")
         return reply
 
-    results = _run_calls(calls, user_message)
+    results, date_fixes = _run_calls(calls, user_message)
 
     # Every call named a tool that does not exist
     if all(r["result"] == {"error": "There is no such tool."} for r in results):
@@ -406,7 +420,11 @@ def run_agent(user_message: str, history=None) -> str:
             "Please send the rest again."
         )
 
-    # A day the user named that does not match the date that was saved
+    # A date was moved to the weekday the user named
+    if date_fixes:
+        final += "\n\n" + "\n".join(date_fixes)
+
+    # A day the user named that still does not match the date that was saved
     date_notes = find_date_mismatches(user_message, results)
     if date_notes:
         _log("date check", date_notes)

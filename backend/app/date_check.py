@@ -35,6 +35,19 @@ TIME_GIVEN = re.compile(
     re.IGNORECASE,
 )
 
+# A delay such as "in 10 minutes" or "in an hour"
+DELAY = re.compile(
+    r"\bin\s+(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|fifteen"
+    r"|twenty|thirty|forty|half(?: an)?)\s+(?:minutes?|mins?|hours?|hrs?)\b",
+    re.IGNORECASE,
+)
+
+# "next Monday" or "last Friday" is ambiguous, so the weekday repair stays out of it
+RELATIVE_WEEKDAY = re.compile(
+    r"\b(?:next|last|previous|coming)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+
 
 def has_time_of_day(text):
     """True if the text gives a time of day (a clock time, noon or midnight,
@@ -104,3 +117,64 @@ def find_date_mismatches(said_text, results, today=None):
                 problems.append(note)
 
     return problems
+
+
+def _single_weekday(text):
+    """The weekday the message names, if it names exactly one and nothing else that
+    points at a date. Otherwise None."""
+    if UNCLEAR.search(text) or RELATIVE_WEEKDAY.search(text) or DELAY.search(text):
+        return None
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    if words & {"today", "tonight", "tomorrow", "yesterday"}:
+        return None
+    named = [i for i, name in enumerate(WEEKDAYS) if name in words]
+    return named[0] if len(named) == 1 else None
+
+
+def _nearest(today, weekday_index, look_back):
+    """That weekday's date: the most recent one up to today (look_back),
+    or the next one after today."""
+    offsets = range(0, -7, -1) if look_back else range(1, 8)
+    for offset in offsets:
+        day = today + timedelta(days=offset)
+        if day.weekday() == weekday_index:
+            return day
+
+
+def repair_weekday_dates(user_message, tool_name, args, today=None):
+    """If the user named exactly one weekday and a date in this tool call falls on a
+    different weekday, move that date to the named weekday (the time of day is kept).
+    Returns (args, notes). Anything unclear is left alone."""
+    today = today or date.today()
+    if not isinstance(args, dict):
+        return args, []
+    index = _single_weekday(str(user_message or ""))
+    if index is None:
+        return args, []
+
+    fixed = dict(args)
+    notes = []
+    for name in DATE_ARGS:
+        value = str(fixed.get(name) or "")
+        match = re.match(r"(\s*)(\d{4}-\d{2}-\d{2})(.*)$", value, re.DOTALL)
+        if not match:
+            continue
+        try:
+            chosen = datetime.strptime(match.group(2), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if chosen.weekday() == index:
+            continue
+
+        # Something already done points back in time; a plan points forward
+        look_back = name == "done_at" or tool_name == "list_activities"
+        target = _nearest(today, index, look_back)
+        fixed[name] = match.group(1) + target.strftime("%Y-%m-%d") + match.group(3)
+
+        note = (
+            f"Date fixed: {chosen.strftime('%A %Y-%m-%d')} was picked, but you said "
+            f"{WEEKDAYS[index].capitalize()}, so I used {target.strftime('%A %Y-%m-%d')}."
+        )
+        if note not in notes:
+            notes.append(note)
+    return fixed, notes
