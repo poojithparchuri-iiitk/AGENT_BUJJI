@@ -10,6 +10,7 @@ from tools.activity import TOOL_MANIFEST as ACTIVITY_MANIFEST
 from tools.email_drafts import TOOL_MANIFEST as EMAIL_MANIFEST
 from tools.memory import TOOL_MANIFEST as MEMORY_MANIFEST, get_remembered_facts
 from draft_check import find_invented_details
+from date_check import find_date_mismatches
 
 load_dotenv()
 
@@ -61,7 +62,7 @@ CLAIM_PATTERN = re.compile(
 def _log(label, value):
     """Print a debug line to the backend terminal (only when DEBUG is True)."""
     if DEBUG:
-        print(f"[DEBUG] {label}: {str(value)[:300]}")
+        print(f"[DEBUG] {label}: {str(value)[:600]}")
 
 
 def _date_context():
@@ -162,7 +163,7 @@ RULES:
 6. If the user asks for something that NO tool above can do (for example checking the weather), reply in plain text: say clearly that you cannot do that yet, and mention what you CAN do with your tools.
 7. NEVER say that something was added, deleted, changed, scheduled, set, logged, saved, remembered or sent unless a tool actually ran. You cannot change anything without a tool call.
 8. Plain text is also fine for normal conversation and greetings. Keep replies short and do not use emojis.
-9. DATES AND TIMES: convert the user's words into numbers using the calendar above. If the user gives a date only, pass YYYY-MM-DD. If the user gives a time too, pass YYYY-MM-DD HH:MM using the 24-hour clock (4 PM becomes 16:00, 9 AM becomes 09:00, noon is 12:00). For "in 30 minutes" or "in 2 hours", add that amount to the current time shown above and pass the result. Never pass dates or times as words. If the user gives no date, leave the date argument out.
+9. DATES AND TIMES: convert the user's words into numbers using the calendar above. If the user gives a date only, pass YYYY-MM-DD. If the user gives a time too, pass YYYY-MM-DD HH:MM using the 24-hour clock (4 PM becomes 16:00, 9 AM becomes 09:00, noon is 12:00). When the user names a weekday (Monday, Friday ...), copy the date printed next to the nearest upcoming one in the calendar above; NEVER calculate a date yourself. For "in 30 minutes" or "in 2 hours", add that amount to the current time shown above and pass the result. Never pass dates or times as words. If the user gives no date, leave the date argument out.
 10. The RECENT CONVERSATION block at the end is for context only, to understand words like "it" or "that task". Those earlier Bujji replies were written AFTER a tool had already run. Do NOT copy their style. Your answer to the NEWEST user message must follow rules 1 to 9: a request that needs a tool is answered with ONLY the JSON tool call(s).
 11. Do NOT ask the user for confirmation before doing something they clearly asked for, such as marking a task done. Call the tool right away. Only ask a question if a tool result says more than one item matches.
 12. TASKS, EVENTS, REMINDERS and ACTIVITIES: a TASK is something still to get done (submit the report, buy milk), possibly with a deadline. An EVENT is something that happens at a specific time (a meeting, a class, an appointment, a call). A REMINDER is an alert at a specific time ("remind me to ..."). An ACTIVITY is something the user has ALREADY done ("I finished my SQL assignment", "I went for a run", "I studied for two hours"): use log_activity. When the user says "mark ... as done" or "complete the ... task", that is complete_task, NOT log_activity. Never log something in the future as an activity. If the user wants an event or a reminder but gave no time, ask them for the time in plain text.
@@ -338,8 +339,13 @@ def run_agent(user_message: str, history=None) -> str:
         {"role": "assistant", "content": reply},
         {"role": "user", "content": (
             f"Tool results, in the order they ran: {json.dumps(results, default=str)}\n"
+            f"The user's original message was: {json.dumps(user_message)}\n"
             "Reply to the user naturally and briefly, without emojis, using ONLY these results. "
             "Cover EVERY result, one by one, in order. "
+            "After covering the results, check the user's original message again. If it contains "
+            "a request that has NO matching result above, say plainly that you did NOT do it and "
+            "ask the user to send it again on its own. "
+            "If it asked a question that the remembered facts answer, answer it in one short sentence. "
             "If a result is null, false, empty, or contains an error, say clearly which "
             "request did not work and why, instead of calling it done. "
             "When listing tasks, events, reminders, activities, contacts or remembered facts, "
@@ -361,7 +367,24 @@ def run_agent(user_message: str, history=None) -> str:
     ]
     final = _ask(followup_messages)
 
-    # Added by code, so it never depends on the model remembering to say it
+    # Everything below is added by code, so it never depends on the model remembering to say it
+
+    # Only the first few requests in a message are run
+    if len(calls) > MAX_TOOL_CALLS:
+        final += (
+            f"\n\nI only handled the first {MAX_TOOL_CALLS} requests in that message. "
+            "Please send the rest again."
+        )
+
+    # A day the user named that does not match the date that was saved
+    date_notes = find_date_mismatches(user_message, results)
+    if date_notes:
+        _log("date check", date_notes)
+        final += (
+            "\n\nCheck the date: " + "; ".join(date_notes)
+            + ". If that is wrong, tell me the right day and I will fix it."
+        )
+
     if _draft_created(results):
         # What the user actually said: this message plus their earlier ones in this chat
         said_text = " ".join([user_message] + [m["content"] for m in recent if m["role"] == "user"])
