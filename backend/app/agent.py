@@ -17,6 +17,10 @@ load_dotenv()
 endpoint = os.getenv("AZURE_PHI4_ENDPOINT")
 api_key = os.getenv("AZURE_PHI4_API_KEY")
 
+# Which deployed model Bujji uses. To switch models, change AZURE_MODEL_NAME in .env.
+MODEL_NAME = (os.getenv("AZURE_MODEL_NAME") or "Phi-4").strip()
+print(f"[AGENT] using model: {MODEL_NAME}")
+
 # Optional: your full name, used to sign emails (add USER_NAME=... to .env)
 USER_NAME = (os.getenv("USER_NAME") or "").strip()
 
@@ -249,10 +253,11 @@ def _parse_tool_calls(reply: str):
 
 def _ask(messages):
     response = client.chat.completions.create(
-        model="Phi-4",
+        model=MODEL_NAME,
         messages=messages,
     )
-    return response.choices[0].message.content.strip()
+    # Some models can return an empty reply: treat that as empty text, not a crash
+    return (response.choices[0].message.content or "").strip()
 
 
 def _time_is_missing(name, args, user_message):
