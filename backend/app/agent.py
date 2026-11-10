@@ -116,6 +116,41 @@ def _normalize(text):
     return " ".join(re.sub(r"[^a-z\s]", "", str(text).lower()).split())
 
 
+# ---- Simple clock questions: answered by the code from the laptop's clock ----
+
+CLOCK_NOUNS = {"time", "date", "day", "month", "year"}
+# A message counts as a clock question only if EVERY word is in this list.
+# "what time is my viva" has words that are not here, so it goes to the model.
+CLOCK_WORDS = CLOCK_NOUNS | {
+    "what", "whats", "which", "is", "it", "the", "a", "of", "and", "now", "right", "current",
+    "currently", "today", "todays", "tell", "me", "say", "show", "give", "can", "could", "you",
+    "please", "hey", "hi", "hello", "ok", "okay", "bujji", "do", "i", "need", "want", "to", "know",
+}
+
+
+def _clock_answer(message, now=None):
+    """The answer to a plain 'what time / date / day / month / year is it' question,
+    or None if the message is anything else."""
+    words = _normalize(message).split()
+    if not words or len(words) > 10 or not all(w in CLOCK_WORDS for w in words):
+        return None
+    nouns = set(words) & CLOCK_NOUNS
+    if not nouns:
+        return None
+
+    now = now or datetime.now()
+    clock = now.strftime("%I:%M %p").lstrip("0")
+    day_text = f"{now.strftime('%A')}, {now.strftime('%B')} {now.day}, {now.year}"
+
+    if "time" in nouns:
+        return f"It's {clock} on {day_text}."
+    if "month" in nouns and not (nouns & {"date", "day"}):
+        return f"It's {now.strftime('%B')} {now.year}. Today is {day_text}."
+    if nouns == {"year"}:
+        return f"It's {now.year}."
+    return f"Today is {day_text}."
+
+
 def _plan_destructive(name, args):
     """For a delete-type tool call that matches EXACTLY ONE item, return what would be
     removed: {"tool", "args" (by ID), "label"}. Return None for anything else (not a
@@ -128,11 +163,14 @@ def _plan_destructive(name, args):
                 return {"tool": name, "args": {"task_id": r["id"]}, "label": f'the task "{r["title"]}"'}
         elif name == "clear_completed_tasks":
             done = [t for t in list_tasks() if t["completed"]]
+            if len(done) == 1:
+                return {"tool": name, "args": {},
+                        "label": f'the completed task "{done[0]["title"]}"'}
             if done:
                 shown = ", ".join(f'"{t["title"]}"' for t in done[:5])
                 more = "" if len(done) <= 5 else f" and {len(done) - 5} more"
                 return {"tool": name, "args": {},
-                        "label": f"all {len(done)} completed task(s): {shown}{more}"}
+                        "label": f"all {len(done)} completed tasks: {shown}{more}"}
         elif name == "delete_event":
             rows = _find_events(args.get("event_id"), args.get("title"))
             if len(rows) == 1:
@@ -183,7 +221,8 @@ def _delete_outcome(action, result):
     """One honest sentence about what really happened."""
     label = action["label"]
     if action["tool"] == "clear_completed_tasks" and isinstance(result, dict) and "deleted_count" in result:
-        return f"Deleted {result['deleted_count']} completed task(s)."
+        n = result["deleted_count"]
+        return f"Deleted {n} completed task{'s' if n != 1 else ''}."
     if result is True:
         return f"Deleted {label}."
     if isinstance(result, dict) and "error" in result:
@@ -307,7 +346,7 @@ RULES:
 3. If the user asks for several things in one message, output one JSON tool call per request, each on its own line, in the order they were asked (at most 5).
 4. Only use tool names from the list above. NEVER invent a tool name.
 5. In "args", use ONLY the exact argument names listed for that tool. Never invent or rename arguments. Leave out any optional argument you do not need.
-6. If the user asks for something that NO tool above can do (for example checking the weather), reply in plain text: say clearly that you cannot do that yet, and mention what you CAN do with your tools.
+6. If the user asks for something that NO tool above can do (for example checking the weather), reply in plain text: say clearly that you cannot do that yet, and mention what you CAN do with your tools. Telling the current date, day, month, year or time is NOT such a case: answer those in plain text from the "Right now it is" line above, and never say you cannot.
 7. NEVER say that something was added, deleted, changed, scheduled, set, logged, saved, remembered or sent unless a tool actually ran. You cannot change anything without a tool call.
 8. Plain text is also fine for normal conversation and greetings. Keep replies short and do not use emojis.
 9. DATES AND TIMES: convert the user's words into numbers using the calendar above. If the user gives a date only, pass YYYY-MM-DD. If the user gives a time too, pass YYYY-MM-DD HH:MM using the 24-hour clock (4 PM becomes 16:00, 9 AM becomes 09:00, noon is 12:00). When the user names a weekday (Monday, Friday ...), copy the date printed next to the nearest upcoming one in the calendar above; NEVER calculate a date yourself. For "in 30 minutes" or "in 2 hours", add that amount to the current time shown above and pass the result. Never pass dates or times as words. If the user gives no date, leave the date argument out.
@@ -506,6 +545,12 @@ def run_agent(user_message: str, history=None) -> str:
             _clear_pending()
             return "Okay, nothing was deleted."
         _clear_pending()  # any other message drops the question; nothing is deleted
+
+    # A plain "what time / date / day / month / year is it": the code answers from the clock
+    clock = _clock_answer(user_message)
+    if clock:
+        _log("clock question", clock)
+        return clock
 
     messages = [
         {"role": "system", "content": _build_system_prompt(recent)},
