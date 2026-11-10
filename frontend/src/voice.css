@@ -1,0 +1,30 @@
+.speak-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 14px;
+  color: var(--muted);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.speak-toggle[aria-pressed='true'] {
+  color: var(--cobalt-ink);
+  background: var(--cobalt);
+  border-color: var(--cobalt);
+}
+
+.speak-toggle svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

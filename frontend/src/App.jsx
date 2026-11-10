@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import './App.css'
+import './voice.css'
 
 const API = 'http://127.0.0.1:8000'
 // Sending or discarding an email needs this header, which only this page adds
@@ -13,6 +14,11 @@ const STARTERS = [
   'I finished my SQL assignment',
 ]
 
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+]
+
 // Turns **bold** in a reply into real bold text. React escapes everything else.
 function renderText(text) {
   return String(text)
@@ -24,6 +30,92 @@ function renderText(text) {
         part
       )
     )
+}
+
+// ---- Speaking (the browser's built-in voices) ----
+
+// Rewrites a reply so it sounds natural when read aloud
+function speechText(text) {
+  return String(text)
+    .replace(/\*\*/g, '')
+    .replace(/`/g, '')
+    .replace(/^\s*[-*]\s+/gm, '')
+    .replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, (match, year, month, day) => {
+      const name = MONTHS[Number(month) - 1]
+      return name ? `${name} ${Number(day)}, ${year}` : match
+    })
+    .replace(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g, (match, hour, minute) => {
+      const h = Number(hour)
+      const suffix = h >= 12 ? 'PM' : 'AM'
+      const h12 = h % 12 === 0 ? 12 : h % 12
+      return minute === '00' ? `${h12} ${suffix}` : `${h12}:${minute} ${suffix}`
+    })
+    .replace(/\s*\n+\s*/g, '. ')
+    .replace(/\.\s*\./g, '.')
+    .trim()
+}
+
+// Long utterances can stop halfway in Chrome, so read in sentence-sized pieces
+function splitForSpeech(text) {
+  const sentences = text.match(/[^.!?]+[.!?]*/g) || [text]
+  const chunks = []
+  let current = ''
+  for (const sentence of sentences) {
+    if (current && (current + sentence).length > 180) {
+      chunks.push(current.trim())
+      current = sentence
+    } else {
+      current += sentence
+    }
+  }
+  if (current.trim()) chunks.push(current.trim())
+  return chunks
+}
+
+function pickVoice() {
+  const voices = window.speechSynthesis.getVoices()
+  return (
+    voices.find((v) => v.lang === 'en-IN') ||
+    voices.find((v) => v.lang === 'en-GB') ||
+    voices.find((v) => v.lang.startsWith('en')) ||
+    null
+  )
+}
+
+function speak(text) {
+  if (!('speechSynthesis' in window)) return
+  const cleaned = speechText(text)
+  if (!cleaned) return
+  window.speechSynthesis.cancel()
+  const voice = pickVoice()
+  for (const chunk of splitForSpeech(cleaned)) {
+    const utterance = new SpeechSynthesisUtterance(chunk)
+    if (voice) {
+      utterance.voice = voice
+      utterance.lang = voice.lang
+    }
+    window.speechSynthesis.speak(utterance)
+  }
+}
+
+function stopSpeaking() {
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+}
+
+function readSpeakSetting() {
+  try {
+    return localStorage.getItem('bujji-speak') === 'on'
+  } catch (err) {
+    return false
+  }
+}
+
+function saveSpeakSetting(on) {
+  try {
+    localStorage.setItem('bujji-speak', on ? 'on' : 'off')
+  } catch (err) {
+    // Storage may be blocked: the setting then lasts only until the page is closed
+  }
 }
 
 // Bujji's face. state is "idle" or "thinking"; later, voice mode can reuse these states.
@@ -53,12 +145,25 @@ function App() {
   const [drafts, setDrafts] = useState([])
   const [busy, setBusy] = useState(null) // { id, action } while a draft is being sent or discarded
   const [notice, setNotice] = useState(null)
+  const [speakOn, setSpeakOn] = useState(readSpeakSetting)
 
+  const canSpeak = 'speechSynthesis' in window
+  const speakRef = useRef(speakOn)
   const endRef = useRef(null)
   const inputRef = useRef(null)
 
   useEffect(() => {
     document.title = 'Agent Bujji'
+  }, [])
+
+  // Keep a current copy of the voice setting for the async chat code below
+  useEffect(() => {
+    speakRef.current = speakOn
+  }, [speakOn])
+
+  // Stop talking if the page is closed or reloaded
+  useEffect(() => {
+    return () => stopSpeaking()
   }, [])
 
   // Keep the newest message in view
@@ -82,6 +187,17 @@ function App() {
     loadDrafts()
   }, [])
 
+  const toggleSpeak = () => {
+    const next = !speakOn
+    setSpeakOn(next)
+    saveSpeakSetting(next)
+    if (next) {
+      speak('Voice is on.')
+    } else {
+      stopSpeaking()
+    }
+  }
+
   const sendMessage = async () => {
     const text = input.trim()
     if (!text || loading) return
@@ -89,11 +205,13 @@ function App() {
     // The last 6 earlier messages become Bujji's short-term memory
     const history = messages.slice(-6)
 
+    stopSpeaking() // stop talking when the user sends something new
     setMessages((prev) => [...prev, { role: 'user', content: text }])
     setInput('')
     setNotice(null)
     setLoading(true)
 
+    let reply
     try {
       const res = await fetch(`${API}/chat`, {
         method: 'POST',
@@ -101,10 +219,12 @@ function App() {
         body: JSON.stringify({ message: text, history: history }),
       })
       const data = await res.json()
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }])
+      reply = data.reply
     } catch (err) {
-      setMessages((prev) => [...prev, { role: 'assistant', content: 'Error connecting to backend' }])
+      reply = 'Error connecting to backend'
     }
+    setMessages((prev) => [...prev, { role: 'assistant', content: reply }])
+    if (speakRef.current) speak(reply)
 
     await loadDrafts()
     setLoading(false)
@@ -165,6 +285,22 @@ function App() {
       <header className="top">
         <BujjiMark state={loading ? 'thinking' : 'idle'} />
         <h1 className="wordmark">Bujji</h1>
+        {canSpeak && (
+          <button className="speak-toggle" onClick={toggleSpeak} aria-pressed={speakOn}>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M11 5 6 9H3v6h3l5 4V5z" />
+              {speakOn ? (
+                <>
+                  <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                  <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+                </>
+              ) : (
+                <path d="M16 9l5 6M21 9l-5 6" />
+              )}
+            </svg>
+            {speakOn ? 'Voice on' : 'Voice off'}
+          </button>
+        )}
       </header>
 
       <main className="chat" role="log" aria-label="Conversation">
