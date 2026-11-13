@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from database import get_connection, init_db
 
 # Make sure the tasks table exists
@@ -6,6 +7,40 @@ init_db()
 
 # Words ignored when matching a task by its title
 STOP_WORDS = {"the", "a", "an", "my", "one", "task", "tasks", "it", "that", "this", "to", "of"}
+
+MAX_TITLE_LENGTH = 200
+
+DATE_ERROR = {
+    "error": "The due date must be a real date in the form YYYY-MM-DD, or YYYY-MM-DD HH:MM. "
+             "Nothing was saved. Ask the user for the date."
+}
+
+
+def _clean_title(title):
+    """One line, single spaces. Returns the cleaned title, or an error dict."""
+    text = " ".join(str(title or "").split())
+    if not text:
+        return {"error": "A task needs a title. Nothing was saved. Ask the user what the task is."}
+    if len(text) > MAX_TITLE_LENGTH:
+        return {
+            "error": f"That title is too long (over {MAX_TITLE_LENGTH} characters). Nothing was saved. "
+                     "Ask the user for a shorter title."
+        }
+    return text
+
+
+def _clean_due_date(value):
+    """None for no due date, the cleaned date as text, or an error dict."""
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            datetime.strptime(text, fmt)
+            return text
+        except ValueError:
+            continue
+    return DATE_ERROR
 
 
 def _row_to_dict(row):
@@ -43,10 +78,17 @@ def _ambiguous(rows):
 
 
 def add_task(title: str, due_date: str = None):
+    clean = _clean_title(title)
+    if isinstance(clean, dict):
+        return clean
+    due = _clean_due_date(due_date)
+    if isinstance(due, dict):
+        return due
+
     conn = get_connection()
     cursor = conn.execute(
         "INSERT INTO tasks (title, due_date) VALUES (?, ?)",
-        (title, due_date),
+        (clean, due),
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -82,6 +124,18 @@ def edit_task(task_id=None, title=None, new_title=None, new_due_date=None):
     if not new_title and not new_due_date:
         return {"error": "Nothing to change. Ask the user what the new title or new due date should be."}
 
+    # Check the new values first, so nothing is changed if one of them is bad
+    clean_title = None
+    if new_title:
+        clean_title = _clean_title(new_title)
+        if isinstance(clean_title, dict):
+            return clean_title
+    clean_due = None
+    if new_due_date:
+        clean_due = _clean_due_date(new_due_date)
+        if isinstance(clean_due, dict):
+            return clean_due
+
     rows = _find_tasks(task_id, title)
     if not rows:
         return None
@@ -90,10 +144,10 @@ def edit_task(task_id=None, title=None, new_title=None, new_due_date=None):
 
     target_id = rows[0]["id"]
     conn = get_connection()
-    if new_title:
-        conn.execute("UPDATE tasks SET title = ? WHERE id = ?", (new_title, target_id))
-    if new_due_date:
-        conn.execute("UPDATE tasks SET due_date = ? WHERE id = ?", (new_due_date, target_id))
+    if clean_title:
+        conn.execute("UPDATE tasks SET title = ? WHERE id = ?", (clean_title, target_id))
+    if clean_due:
+        conn.execute("UPDATE tasks SET due_date = ? WHERE id = ?", (clean_due, target_id))
     conn.commit()
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (target_id,)).fetchone()
     conn.close()
@@ -129,7 +183,7 @@ TOOL_MANIFEST = [
     {
         "name": "add_task",
         "description": "Add a new task",
-        "args": {"title": "string", "due_date": "string YYYY-MM-DD (optional)"},
+        "args": {"title": "string", "due_date": "string YYYY-MM-DD or YYYY-MM-DD HH:MM (optional)"},
         "function": add_task,
     },
     {
@@ -154,7 +208,7 @@ TOOL_MANIFEST = [
             "task_id": "integer, only if the ID is known",
             "title": "string, words from the CURRENT title, used to find the task",
             "new_title": "string, the new title (optional)",
-            "new_due_date": "string YYYY-MM-DD, the new due date (optional)",
+            "new_due_date": "string YYYY-MM-DD or YYYY-MM-DD HH:MM, the new due date (optional)",
         },
         "function": edit_task,
     },

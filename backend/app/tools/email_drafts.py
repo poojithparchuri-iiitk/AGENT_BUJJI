@@ -5,7 +5,12 @@ from mailer import send_email
 # Words ignored when matching a contact by name
 STOP_WORDS = {"the", "a", "an", "my", "to", "of"}
 
-EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
+def _one_line(text):
+    """Collapse line breaks and repeated spaces into single spaces."""
+    return " ".join(str(text or "").split())
 
 
 def _init_tables():
@@ -40,7 +45,7 @@ _init_tables()
 
 
 def _valid_email(address):
-    return bool(EMAIL_PATTERN.match(str(address).strip()))
+    return bool(EMAIL_PATTERN.fullmatch(str(address).strip()))
 
 
 def _contact_to_dict(row):
@@ -78,7 +83,7 @@ def _find_contacts(contact_id=None, name=None):
 
 def save_contact(name: str, email: str):
     """Save a person's email address. Saving the same name again updates the address."""
-    name = str(name).strip()
+    name = _one_line(name)
     email = str(email).strip()
     if not name:
         return {"error": "I need a name for this contact."}
@@ -152,8 +157,8 @@ def _resolve_recipient(to):
 
 def draft_email(to: str, subject: str, body: str):
     """Write an email DRAFT. This NEVER sends anything."""
-    subject = str(subject).strip()
-    body = str(body).strip()
+    subject = _one_line(subject)  # a subject is always one line
+    body = str(body or "").strip()
     if not subject or not body:
         return {"error": "An email needs both a subject and a body."}
 
@@ -174,7 +179,7 @@ def draft_email(to: str, subject: str, body: str):
     result = _draft_to_dict(row)
     result["note"] = (
         "This is only a DRAFT. It has NOT been sent. "
-        "The user must click the Send button under the chat to send it."
+        "The user must click the Send email button under the chat to send it."
     )
     return result
 
@@ -191,7 +196,7 @@ def get_pending_drafts():
 
 
 def send_draft(draft_id):
-    """Send one pending draft. Called only when the user clicks Send."""
+    """Send one pending draft. Called only when the user clicks Send email."""
     conn = get_connection()
     # Claim the draft first, so a double click can never send it twice
     cursor = conn.execute(
@@ -205,7 +210,11 @@ def send_draft(draft_id):
     row = conn.execute("SELECT * FROM email_drafts WHERE id = ?", (draft_id,)).fetchone()
     conn.close()
 
-    result = send_email(row["to_email"], row["subject"], row["body"])
+    # Whatever happens while sending, the draft must end up either sent or back to pending
+    try:
+        result = send_email(row["to_email"], row["subject"], row["body"])
+    except Exception as e:
+        result = {"ok": False, "error": f"Could not send: {e}"}
 
     conn = get_connection()
     if result.get("ok"):
