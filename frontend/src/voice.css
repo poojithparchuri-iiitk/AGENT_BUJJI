@@ -1,5 +1,26 @@
-.speak-toggle {
+.voice-controls {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.voice-picker {
+  min-height: 40px;
+  max-width: 220px;
+  padding: 6px 12px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.speak-toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
