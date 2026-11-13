@@ -6,6 +6,8 @@ TIME_FORMAT = "%Y-%m-%d %H:%M"
 DATE_FORMAT = "%Y-%m-%d"
 DEFAULT_DURATION = timedelta(hours=1)
 
+MAX_TITLE_LENGTH = 200
+
 # Words ignored when matching an event by its title
 STOP_WORDS = {"the", "a", "an", "my", "one", "event", "meeting", "it", "that", "this", "to", "of"}
 
@@ -21,6 +23,19 @@ PAST_ERROR = {
 
 def _now():
     return datetime.now().replace(second=0, microsecond=0)
+
+
+def _clean_title(title):
+    """One line, single spaces. Returns the cleaned title, or an error dict."""
+    text = " ".join(str(title or "").split())
+    if not text:
+        return {"error": "An event needs a title. Nothing was saved. Ask the user what the event is."}
+    if len(text) > MAX_TITLE_LENGTH:
+        return {
+            "error": f"That title is too long (over {MAX_TITLE_LENGTH} characters). Nothing was saved. "
+                     "Ask the user for a shorter title."
+        }
+    return text
 
 
 def _init_table():
@@ -96,6 +111,10 @@ def _conflicts(start_str, end_str, ignore_id=0):
 
 
 def add_event(title: str, start_time: str, end_time: str = None):
+    clean = _clean_title(title)
+    if isinstance(clean, dict):
+        return clean
+
     start = _parse_time(start_time)
     if start is None:
         return TIME_ERROR
@@ -120,7 +139,7 @@ def add_event(title: str, start_time: str, end_time: str = None):
     conn = get_connection()
     cursor = conn.execute(
         "INSERT INTO events (title, start_time, end_time) VALUES (?, ?, ?)",
-        (title, start_str, end_str),
+        (clean, start_str, end_str),
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -162,6 +181,13 @@ def edit_event(event_id=None, title=None, new_title=None, new_start_time=None, n
     if not (new_title or new_start_time or new_end_time):
         return {"error": "Nothing to change. Ask the user what the new title or new time should be."}
 
+    # Check the new title first, so nothing is changed if it is bad
+    clean_title = None
+    if new_title:
+        clean_title = _clean_title(new_title)
+        if isinstance(clean_title, dict):
+            return clean_title
+
     rows = _find_events(event_id, title)
     if not rows:
         return None
@@ -194,7 +220,7 @@ def edit_event(event_id=None, title=None, new_title=None, new_start_time=None, n
 
     start_str = start.strftime(TIME_FORMAT)
     end_str = end.strftime(TIME_FORMAT)
-    final_title = new_title if new_title else row["title"]
+    final_title = clean_title if clean_title else row["title"]
 
     conn = get_connection()
     conn.execute(

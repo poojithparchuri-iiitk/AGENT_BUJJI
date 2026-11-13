@@ -5,8 +5,23 @@ from database import get_connection
 TIME_FORMAT = "%Y-%m-%d %H:%M"
 DATE_FORMAT = "%Y-%m-%d"
 
+MAX_TEXT_LENGTH = 200
+
 # Words ignored when matching an activity by its description
 STOP_WORDS = {"the", "a", "an", "my", "one", "activity", "entry", "log", "it", "that", "this", "to", "of"}
+
+
+def _clean_text(text):
+    """One line, single spaces. Returns the cleaned text, or an error dict."""
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned:
+        return {"error": "An activity needs a description. Nothing was saved. Ask the user what they did."}
+    if len(cleaned) > MAX_TEXT_LENGTH:
+        return {
+            "error": f"That description is too long (over {MAX_TEXT_LENGTH} characters). Nothing was saved. "
+                     "Ask the user for a shorter one."
+        }
+    return cleaned
 
 
 def _init_table():
@@ -74,6 +89,10 @@ def _ambiguous(rows):
 
 def log_activity(description: str, done_at: str = None):
     """Record something the user has already done. With no done_at, it means right now."""
+    clean = _clean_text(description)
+    if isinstance(clean, dict):
+        return clean
+
     now = datetime.now().replace(second=0, microsecond=0)
 
     if done_at:
@@ -88,7 +107,7 @@ def log_activity(description: str, done_at: str = None):
     conn = get_connection()
     cursor = conn.execute(
         "INSERT INTO activities (description, done_at) VALUES (?, ?)",
-        (description, when.strftime(TIME_FORMAT)),
+        (clean, when.strftime(TIME_FORMAT)),
     )
     conn.commit()
     new_id = cursor.lastrowid

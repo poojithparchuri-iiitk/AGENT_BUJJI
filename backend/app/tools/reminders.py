@@ -4,12 +4,27 @@ from database import get_connection
 
 TIME_FORMAT = "%Y-%m-%d %H:%M"
 
+MAX_TEXT_LENGTH = 200
+
 # Words ignored when matching a reminder by its text
 STOP_WORDS = {"the", "a", "an", "my", "one", "reminder", "reminders", "remind", "me", "it", "that", "this", "to", "of"}
 
 TIME_ERROR = {
     "error": "I need both the date AND the time (format YYYY-MM-DD HH:MM). Ask the user for the missing part."
 }
+
+
+def _clean_text(text):
+    """One line, single spaces. Returns the cleaned text, or an error dict."""
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned:
+        return {"error": "A reminder needs some text. Nothing was saved. Ask the user what to remind them about."}
+    if len(cleaned) > MAX_TEXT_LENGTH:
+        return {
+            "error": f"That reminder is too long (over {MAX_TEXT_LENGTH} characters). Nothing was saved. "
+                     "Ask the user for a shorter one."
+        }
+    return cleaned
 
 
 def _init_table():
@@ -77,6 +92,10 @@ def _ambiguous(rows):
 
 
 def add_reminder(text: str, remind_at: str):
+    clean = _clean_text(text)
+    if isinstance(clean, dict):
+        return clean
+
     when = _parse_time(remind_at)
     if when is None:
         return TIME_ERROR
@@ -89,7 +108,7 @@ def add_reminder(text: str, remind_at: str):
     conn = get_connection()
     cursor = conn.execute(
         "INSERT INTO reminders (text, remind_at) VALUES (?, ?)",
-        (text, when.strftime(TIME_FORMAT)),
+        (clean, when.strftime(TIME_FORMAT)),
     )
     conn.commit()
     new_id = cursor.lastrowid

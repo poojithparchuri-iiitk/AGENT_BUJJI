@@ -161,7 +161,9 @@ def is_rate_limit(error):
 
 
 def is_timeout(error):
-    return "timeout" in type(error).__name__.lower() or "timed out" in str(error).lower()
+    name = type(error).__name__.lower()
+    text = str(error).lower()
+    return "timeout" in name or "timed out" in text or "connection" in name or "connection error" in text
 
 
 def ask_with_budget(messages):
