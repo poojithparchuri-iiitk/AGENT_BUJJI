@@ -13,6 +13,15 @@ TIME_ERROR = {
     "error": "I need both the date AND the time (format YYYY-MM-DD HH:MM). Ask the user for the missing part."
 }
 
+PAST_ERROR = {
+    "error": "That time has already passed, so nothing was saved. Tell the user, and ask whether they "
+             "meant a later date. If it already happened, they can log it as an activity instead."
+}
+
+
+def _now():
+    return datetime.now().replace(second=0, microsecond=0)
+
 
 def _init_table():
     conn = get_connection()
@@ -101,6 +110,10 @@ def add_event(title: str, start_time: str, end_time: str = None):
     if end <= start:
         return {"error": "The end time must be after the start time."}
 
+    # An event that has already ended cannot be scheduled. One that is still going on can.
+    if end < _now():
+        return PAST_ERROR
+
     start_str = start.strftime(TIME_FORMAT)
     end_str = end.strftime(TIME_FORMAT)
 
@@ -174,6 +187,10 @@ def edit_event(event_id=None, title=None, new_title=None, new_start_time=None, n
 
     if end <= start:
         return {"error": "The end time must be after the start time."}
+
+    # Moving an event into the past is refused. Renaming an old event is still fine.
+    if (new_start_time or new_end_time) and end < _now():
+        return PAST_ERROR
 
     start_str = start.strftime(TIME_FORMAT)
     end_str = end.strftime(TIME_FORMAT)
