@@ -2,6 +2,7 @@ import os, json, re
 from datetime import date, datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
+import database
 
 from tools.tasks import TOOL_MANIFEST as TASKS_MANIFEST, _find_tasks, list_tasks
 from tools.schedule import TOOL_MANIFEST as SCHEDULE_MANIFEST, _find_events
@@ -88,25 +89,29 @@ NO_WORDS = {
     "no thanks", "no dont", "no keep it", "no cancel",
 }
 
-# What is waiting for the user's answer. Only the immediately next message can answer it.
-PENDING = {"actions": [], "time": None}
+# What is waiting for each customer's answer. Only the immediately next message can answer it.
+# The key is the customer id, or None for the owner.
+PENDING = {}
+
+
+def _owner():
+    return database.current_customer()
 
 
 def _set_pending(actions):
-    PENDING["actions"] = actions
-    PENDING["time"] = datetime.now()
+    PENDING[_owner()] = {"actions": actions, "time": datetime.now()}
 
 
 def _clear_pending():
-    PENDING["actions"] = []
-    PENDING["time"] = None
+    PENDING.pop(_owner(), None)
 
 
 def _pending_actions():
-    """The delete actions waiting for an answer, or [] if none or too old."""
-    if PENDING["actions"] and PENDING["time"]:
-        if datetime.now() - PENDING["time"] <= timedelta(minutes=PENDING_MINUTES):
-            return PENDING["actions"]
+    """The delete actions waiting for this customer's answer, or [] if none or too old."""
+    entry = PENDING.get(_owner())
+    if entry and entry["actions"]:
+        if datetime.now() - entry["time"] <= timedelta(minutes=PENDING_MINUTES):
+            return entry["actions"]
     _clear_pending()
     return []
 
