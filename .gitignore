@@ -21,3 +21,5 @@ Thumbs.db
 
 # IDE
 .vscode/
+backend/app/accounts.db
+backend/app/customers/
